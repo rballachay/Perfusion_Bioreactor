@@ -17,7 +17,7 @@ sns.set()
 """
 # Questions for Coffman:
     1. What is the typical start-up time associated with a perfusion reactor
-
+    2. Is it possible that tthe value of 40 ng/cell/day is supposed to be pg?
 """
 class chemostat:
     
@@ -44,6 +44,9 @@ class chemostat:
         if self.bleed!=0:
             self.a=self.a-self.bleed
         
+        # Concentration factor of biomass in ATF filter
+        self.C = 5
+        
         # Yield of biomass on glucose
         self.Yc_s = 1000*1.7*10**6 * self.CELL
         
@@ -66,10 +69,10 @@ class chemostat:
         self.Yt_s = 1.75 # - [3]
         
         # Alpha in protein production equation
-        self.alpha = (7.65*10**(-7))/self.CELL # - [2]
+        self.alpha = 10**(-6)*(7.65*10**(-7))/self.CELL # g/g - [2]
         
         # Beta in protein production equation
-        self.beta = 7.65*10**(-8)/self.CELL # - [2]
+        self.beta = 10**(-6)*(7.65*10**(-8))/self.CELL # g/g/hr - [2]
         
         # Average cell death rate 
         self.kd = 0.001 # - h-1 [0]
@@ -78,7 +81,7 @@ class chemostat:
         self.kt = 0.0001 # - h-1 [0]
         
         # Maximum oxygen consumption rate
-        self.maxX = (120*10**6) * self.CELL # g/L - [1]
+        self.maxX = (1000*120*10**6) * self.CELL # g/L - [1]
         
         # kLa based on [1]
         self.kLa = 57 # h-1 [1]
@@ -96,6 +99,9 @@ class chemostat:
         # Rate of heat generation @ max density 
         self.heat = 26880/8000/(120*1000*10**6)/self.CELL # Watts/gCell
         
+        # Correction factor so that we get the same yield as ICB framework
+        self.correction_factor = 10
+        
     def __chemoSolve(self, z,t): 
         "System of ODEs to be solved for"
         
@@ -107,9 +113,9 @@ class chemostat:
         rd = (self.kd + self.kt*Ct)*Cc
         
         # All ODEs
-        dCc = (self.a*self.F*self.Cc0*Cc-(1+self.a)*self.F*Cc+self.V*(rg-rd))/self.V
+        dCc = (self.a*self.F*self.C*Cc-(1+self.a)*self.F*Cc+self.V*(rg-rd))/self.V
         dCs = (self.F*self.c0+self.a*self.F*Cs-self.V*rg/self.Yc_s-(1+self.a)*self.F*Cs)/self.V
-        dCp = (self.V*(self.alpha*dCc+self.beta*Cc)*10**-3 - self.F*Cp)/self.V
+        dCp = (self.V*self.correction_factor*(self.alpha*rg+self.beta*Cc) - self.F*Cp)/self.V
         dCt = (self.Yt_s/self.Yc_s)*rg - self.F*Ct/self.V
         
         return [dCc,dCs,dCp,dCt]
@@ -123,7 +129,6 @@ class chemostat:
         self.solTemp = odeint(self.__chemoSolve,(self.Cc0,chemo.Cs0,0,0),self.t)
         
         self.sol = self.heat_and_oxygen()
-        
         return self.sol
     
     def heat_and_oxygen(self):
@@ -132,8 +137,8 @@ class chemostat:
         N,_ = self.solTemp.shape
         self.sol = np.zeros((N,6))
         self.sol[:,:4] = self.solTemp
-        heat = self.solTemp[:,0]*self.heat
-        oxygen = self.solTemp[:,0]*self.qo2
+        heat = self.solTemp[:,0]*self.heat*self.V/1000 # convert to kilowatts
+        oxygen = self.solTemp[:,0]*self.qo2*24  # convert to g/L/day
         self.sol[:,4] = heat
         self.sol[:,5] = oxygen
     
@@ -145,11 +150,11 @@ class chemostat:
         
         y_names = ['Cell Densiy (g/L)','Glucose Concentration (g/L)',
                    'Lactate Concentration (g/L)','IgG Concentration (mg/L)',
-                   'Heat Generated (Watts/g cell)','Oxygen Uptake (g/g cell/hr)']
+                   'Heat Generated (kW)','Oxygen Uptake (g/L/day)']
         
         colors = ['darkolivegreen','teal','maroon','darkmagenta','crimson','darkorange']
         plt.figure(figsize=(10,15),dpi=300)
-        plt.title("Active Chemostat Concentration")
+        
         for i in range(0,6):
             plt.subplot(3,2,i+1)
             plt.ylabel(y_names[i])
@@ -167,11 +172,66 @@ class chemostat:
                 plt.legend()
         plt.show()
         
+    def integrate_data(self):
+        "Integrate data to calculate total amount of resource used"
+        _,N = self.sol.shape
+        
+        self.cumulative = np.zeros((self.batch_time,6))
+        
+        # Calculate mass of CHO cells bled out of reactor
+        self.cumulative[:,0] = np.cumsum(self.sol[:,0]*(self.bleed)*self.F/1000**2,axis=0)
+        
+        # Calculate mass of CHO cells processed by ATF filter in tonnes
+        self.cumulative[:,1] = np.cumsum(self.sol[:,0]*(self.a+1)*self.F/1000**2,axis=0)
+        
+        # Calculate amount of glucose added to reactor in tonnes
+        self.cumulative[:,2] = self.t*self.F*self.c0/1000**2
+        
+        # Calculate the total amount of heat produced in GJ
+        self.cumulative[:,3] = np.cumsum(self.sol[:,-2]*3600/10**9,axis=0)
+        
+        # Calculate the amount of protein captured by ATF in kg
+        self.cumulative[:,4] = np.cumsum(self.F*self.sol[:,2]/1000,axis=0)
+        
+        # Total amount of permeate volume used
+        self.cumulative[:,5] =self.t*self.F/1000
+        
+        return self.cumulative
+        
+    def plot_integrated_data(self):
+        "Plot data from integration"
+        
+        y_names = ['Mass of Cells Bled (tonnes)','Mass of Cells Filtered (tonnes)',
+                   'Mass of Glucose Consumed (tonnes)','Heat Produced (GJ)',
+                   'Protein Yielded (kg)','Amount of Permeate Used ($m^3$)']
+        
+        colors = ['darkolivegreen','teal','maroon','darkmagenta','crimson','darkorange']
+        plt.figure(figsize=(10,15),dpi=300)
+        
+        self.cumsum = self.integrate_data()
+        for i in range(0,6):
+            plt.subplot(3,2,i+1)
+            plt.ylabel(y_names[i])
+            plt.xlabel('Time From Start-up (hr)')
+            if i!=1 and i!=5:
+                plt.plot(self.t,self.cumsum[:,i],colors[i])
+                plt.plot([100,100],[np.min(self.cumsum[:,i]),np.max(self.cumsum[:,i])],'--k')
+            elif i==1:
+                plt.plot(self.t,self.cumsum[:,i],colors[i],label='Total Mass')
+                plt.plot([100,100],[np.min(self.cumsum[:,i]),np.max(self.cumsum[:,i])],'--k',label='Batch start')
+                plt.legend()
+            else:
+                plt.plot(self.t,self.cumsum[:,i],colors[i],label='Total Quantity')
+                plt.plot([100,100],[np.min(self.cumsum[:,i]),np.max(self.cumsum[:,i])],'--k',label='Batch start')
+                plt.legend()
+        plt.show()
+         
 
-
-chemo = chemostat()
-sol = chemo.solve_ODE()
-chemo.plot_data()
+if __name__=='__main__':
+    chemo = chemostat()
+    sol = chemo.solve_ODE()
+    chemo.plot_data()
+    chemo.plot_integrated_data()
 
 """[0] No reference. TBD.
 """
