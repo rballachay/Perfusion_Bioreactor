@@ -10,6 +10,9 @@ Note: See references for values taken from literature
 
 import numpy as np
 from scipy.integrate import odeint
+import matplotlib.pyplot as plt
+import seaborn as sns
+sns.set()
 
 """
 # Questions for Coffman:
@@ -81,14 +84,17 @@ class chemostat:
         self.kLa = 57 # h-1 [1]
         
         # Maintain oxygen level at 50% saturation
-        self.min = 0.5*8*10**-3 # g/L - [0]
+        self.min = 0.5*6*10**-3 # g/L - [0]
         
         # Specific oxygen uptake rate based on values
-        self.qo2 = self.kLa*self.min/self.maxX # - units [1]
+        self.qo2 = self.kLa*self.min/self.maxX # g/g/hr- units [1]
         
         # Batch time based on start-up and total run time
         self.start_up = 100 # hr
         self.batch_time = self.start_up + 24*20 # hr
+        
+        # Rate of heat generation @ max density 
+        self.heat = 26880/8000/(120*1000*10**6)/self.CELL # Watts/gCell
         
     def __chemoSolve(self, z,t): 
         "System of ODEs to be solved for"
@@ -103,7 +109,7 @@ class chemostat:
         # All ODEs
         dCc = (self.a*self.F*self.Cc0*Cc-(1+self.a)*self.F*Cc+self.V*(rg-rd))/self.V
         dCs = (self.F*self.c0+self.a*self.F*Cs-self.V*rg/self.Yc_s-(1+self.a)*self.F*Cs)/self.V
-        dCp = (self.V*(self.alpha*dCc+self.beta*Cc)*10**-6 - self.F*Cp)/self.V
+        dCp = (self.V*(self.alpha*dCc+self.beta*Cc)*10**-3 - self.F*Cp)/self.V
         dCt = (self.Yt_s/self.Yc_s)*rg - self.F*Ct/self.V
         
         return [dCc,dCs,dCp,dCt]
@@ -114,26 +120,58 @@ class chemostat:
         
         self.t = np.linspace(0, self.batch_time, self.batch_time) 
     
-        self.sol = odeint(self.__chemoSolve,(self.Cc0,chemo.Cs0,0,0),self.t)
+        self.solTemp = odeint(self.__chemoSolve,(self.Cc0,chemo.Cs0,0,0),self.t)
+        
+        self.sol = self.heat_and_oxygen()
         
         return self.sol
     
+    def heat_and_oxygen(self):
+        " Add heat and oxygen data to solution before returning"
+        
+        N,_ = self.solTemp.shape
+        self.sol = np.zeros((N,6))
+        self.sol[:,:4] = self.solTemp
+        heat = self.solTemp[:,0]*self.heat
+        oxygen = self.solTemp[:,0]*self.qo2
+        self.sol[:,4] = heat
+        self.sol[:,5] = oxygen
+    
+        return self.sol
+        
+    
     def plot_data(self):
+        "Plot data from ODE without calculating total production"
+        
+        y_names = ['Cell Densiy (g/L)','Glucose Concentration (g/L)',
+                   'Lactate Concentration (g/L)','IgG Concentration (mg/L)',
+                   'Heat Generated (Watts/g cell)','Oxygen Uptake (g/g cell/hr)']
+        
+        colors = ['darkolivegreen','teal','maroon','darkmagenta','crimson','darkorange']
+        plt.figure(figsize=(10,15),dpi=300)
+        plt.title("Active Chemostat Concentration")
+        for i in range(0,6):
+            plt.subplot(3,2,i+1)
+            plt.ylabel(y_names[i])
+            plt.xlabel('Time From Start-up (hr)')
+            if i!=1 and i!=5:
+                plt.plot(self.t,self.sol[:,i],colors[i])
+                plt.plot([100,100],[np.min(self.sol[:,i]),np.max(self.sol[:,i])],'--k')
+            elif i==1:
+                plt.plot(self.t,self.sol[:,i],colors[i],label='Concentration')
+                plt.plot([100,100],[np.min(self.sol[:,i]),np.max(self.sol[:,i])],'--k',label='Batch start')
+                plt.legend()
+            else:
+                plt.plot(self.t,self.sol[:,i],colors[i],label='Rate')
+                plt.plot([100,100],[np.min(self.sol[:,i]),np.max(self.sol[:,i])],'--k',label='Batch start')
+                plt.legend()
+        plt.show()
+        
 
 
 chemo = chemostat()
-sol = solve_ODE()
-
-t = np.linspace(0, 24*20+100, 24*20+100)
-z = sol
-import matplotlib.pyplot as plt
-plt.plot(t, z)
-plt.xlabel('t')
-plt.legend(['x', 'y'], shadow=True)
-plt.title('Lotka-Volterra System')
-plt.show()
-
-
+sol = chemo.solve_ODE()
+chemo.plot_data()
 
 """[0] No reference. TBD.
 """
