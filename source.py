@@ -19,11 +19,21 @@ from scipy.integrate import odeint
 class chemostat:
     
     def __init__(self):
+        "Initialize chemostat parameters"
+        
+        # Weight of a single cell
         self.CELL = 250*10**(-12) # g/cell [4]
         
+        # Glucose concentration of media coming in
         self.c0 = 25 # g/L - [0]
+        
+        # Flow rate of media coming in
         self.F = 12000/4/24 # L/hr
+        
+        # Alpha: perfusion rate
         self.a = .5 # - [0]
+        
+        # Beta: bleed rate
         self.bleed = .3 # - [0]
         
         # Re-calcualte the perfusion rate based on the bleed rate
@@ -31,41 +41,90 @@ class chemostat:
         if self.bleed!=0:
             self.a=self.a-self.bleed
         
+        # Yield of biomass on glucose
         self.Yc_s = 1000*1.7*10**6 * self.CELL
-        self.C= 1000*20*10**6*self.CELL # g/L - [5] 
-        self.Cs0 = 50 # g/L - [0]
-        self.mu_max = 0.04 # h-1 - [2]
-        self.Cc0 = 1 # g/L - [0]
-        self.Ks = 0.664 # g/L - [2]
-        self.V = 2000 # - [0]
-        self.Yt_s = 1.75 # - [3]
-        self.alpha = (7.65*10**(-7))/self.CELL # - [2]
-        self.beta = 7.65*10**(-8)/self.CELL # - [2]
-        self.kd = 0.001 # - [0]
-        self.kt = 0.0001 # - [0]
         
+        # Inoculum density in perfusion bioreactor
+        self.Cc0= 1000*20*10**6*self.CELL # g/L - [5] 
+        
+        # Initial glucose concentration in bioreactor
+        self.Cs0 = 50 # g/L - [0]
+        
+        # Maximum growth rate of CHO cells
+        self.mu_max = 0.04 # h-1 - [2]
+        
+        # Monod constant of CHO cells
+        self.Ks = 0.664 # g/L - [2]
+        
+        # Volume of a single bioreactor
+        self.V = 2000 # - [0]
+        
+        # Yield of lactate on glucose
+        self.Yt_s = 1.75 # - [3]
+        
+        # Alpha in protein production equation
+        self.alpha = (7.65*10**(-7))/self.CELL # - [2]
+        
+        # Beta in protein production equation
+        self.beta = 7.65*10**(-8)/self.CELL # - [2]
+        
+        # Average cell death rate 
+        self.kd = 0.001 # - h-1 [0]
+        
+        # Average toxicity of lactate as rate
+        self.kt = 0.0001 # - h-1 [0]
+        
+        # Maximum oxygen consumption rate
         self.maxX = (120*10**6) * self.CELL # g/L - [1]
+        
+        # kLa based on [1]
         self.kLa = 57 # h-1 [1]
+        
+        # Maintain oxygen level at 50% saturation
         self.min = 0.5*8*10**-3 # g/L - [0]
+        
+        # Specific oxygen uptake rate based on values
         self.qo2 = self.kLa*self.min/self.maxX # - units [1]
         
-    def chemoSolve(self, z,t): 
+        # Batch time based on start-up and total run time
+        self.start_up = 100 # hr
+        self.batch_time = self.start_up + 24*20 # hr
+        
+    def __chemoSolve(self, z,t): 
+        "System of ODEs to be solved for"
+        
+        # Separate into cell, substrate, product and toxic 
         Cc, Cs, Cp, Ct = z
         
+        # Growth and death rate
         rg = self.mu_max*Cs*Cc/(self.Ks+Cs)
         rd = (self.kd + self.kt*Ct)*Cc
         
-        dCc = (self.a*self.F*self.C*Cc-(1+self.a)*self.F*Cc+self.V*(rg-rd))/self.V
+        # All ODEs
+        dCc = (self.a*self.F*self.Cc0*Cc-(1+self.a)*self.F*Cc+self.V*(rg-rd))/self.V
         dCs = (self.F*self.c0+self.a*self.F*Cs-self.V*rg/self.Yc_s-(1+self.a)*self.F*Cs)/self.V
         dCp = (self.V*(self.alpha*dCc+self.beta*Cc)*10**-6 - self.F*Cp)/self.V
         dCt = (self.Yt_s/self.Yc_s)*rg - self.F*Ct/self.V
         
         return [dCc,dCs,dCp,dCt]
+    
+    
+    def solve_ODE(self):
+        "Solve system of ODEs using odeint method"
+        
+        self.t = np.linspace(0, self.batch_time, self.batch_time) 
+    
+        self.sol = odeint(self.__chemoSolve,(self.Cc0,chemo.Cs0,0,0),self.t)
+        
+        return self.sol
+    
+    def plot_data(self):
+
 
 chemo = chemostat()
-sol = odeint(chemo.chemoSolve, [chemo.Cc0,chemo.Cs0,0,0],np.linspace(0,20*24,24*20))
+sol = solve_ODE()
 
-t = np.linspace(0, 24*20, 24*20)
+t = np.linspace(0, 24*20+100, 24*20+100)
 z = sol
 import matplotlib.pyplot as plt
 plt.plot(t, z)
@@ -73,6 +132,8 @@ plt.xlabel('t')
 plt.legend(['x', 'y'], shadow=True)
 plt.title('Lotka-Volterra System')
 plt.show()
+
+
 
 """[0] No reference. TBD.
 """
